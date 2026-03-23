@@ -1,2 +1,2 @@
 # Intelligent-Traffic-Light-System-
-An adaptive traffic control system using Arduino and ultrasonic sensors to detect vehicle presence and dynamically optimize traffic signal timing for improved traffic flow and reduced congestion. 
+Designed and implemented an adaptive traffic control system using Arduino and ultrasonic sensors to detect vehicle presence and dynamically optimize traffic signal timing for improved traffic flow and reduced congestion. Integrated multi-directional intersection logic, real-time sensor feedback, and manual override controls, including emergency and priority switching. Enhanced system reliability through state-based control, timed transitions, and safety mechanisms to prevent conflicting signals.
