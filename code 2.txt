@@ -1,0 +1,269 @@
+#define NUM_INTERSECTIONS 4
+#define NORTH 0
+#define SOUTH 1
+#define EAST 2
+#define WEST 3
+
+// LED pins (R, Y, G)
+const int lights[NUM_INTERSECTIONS][3] = {
+  {22, 23, 24}, // North
+  {25, 26, 27}, // South
+  {28, 29, 30}, // East
+  {31, 32, 33}  // West
+};
+
+// Ultrasonic sensor pins (trig, echo)
+const int trigPins[NUM_INTERSECTIONS] = {34, 36, 38, 40};
+const int echoPins[NUM_INTERSECTIONS] = {35, 37, 39, 41};
+
+// Switches
+const int swAllRed = 2;
+const int swNorth = 3;
+const int swSouth = 4;
+const int swEast = 5;
+const int swWest = 6;
+
+// Buzzer
+const int buzzerPin = 10;
+
+// Threshold & timings
+const int DIST_THRESHOLD = 20;
+const unsigned long greenHoldTime = 10000; // 10 seconds when both have cars
+const unsigned long debounceDelay = 50;
+
+// State variables
+enum LightColor { RED, YELLOW, GREEN };
+LightColor state[NUM_INTERSECTIONS] = {RED, RED, RED, RED};
+
+bool manualMode[NUM_INTERSECTIONS] = {false, false, false, false};
+bool emergencyMode = false;
+
+// Siren control
+bool sirenHigh = false;
+unsigned long lastSirenToggle = 0;
+
+// Timing and state for automatic logic
+bool nsGreen = false;
+bool ewGreen = false;
+unsigned long lastSwitchTime = 0;
+
+//  SETUP 
+void setup() {
+  Serial.begin(9600);
+
+  // LEDs
+  for (int i = 0; i < NUM_INTERSECTIONS; i++) {
+    for (int j = 0; j < 3; j++) pinMode(lights[i][j], OUTPUT);
+    pinMode(trigPins[i], OUTPUT);
+    pinMode(echoPins[i], INPUT);
+  }
+
+  // Switches
+  pinMode(swAllRed, INPUT_PULLUP);
+  pinMode(swNorth, INPUT_PULLUP);
+  pinMode(swSouth, INPUT_PULLUP);
+  pinMode(swEast, INPUT_PULLUP);
+  pinMode(swWest, INPUT_PULLUP);
+
+  // Buzzer
+  pinMode(buzzerPin, OUTPUT);
+  noTone(buzzerPin);
+
+  // Start with all red
+  setAll(RED);
+}
+
+//  MAIN LOOP 
+void loop() {
+  checkSwitches();
+
+  if (emergencyMode) {
+    playSiren();
+    return;
+  }
+
+  // Manual mode override
+  for (int i = 0; i < 4; i++) {
+    if (manualMode[i]) {
+      playSiren();
+      handleManual(i);
+      return;
+    }
+  }
+
+  noTone(buzzerPin); // ensure buzzer is off in normal mode
+
+  //  SENSOR-BASED AUTOMATIC MODE
+  long distN = getDistance(NORTH);
+  long distS = getDistance(SOUTH);
+  long distE = getDistance(EAST);
+  long distW = getDistance(WEST);
+
+  bool carNS = (distN > 0 && distN < DIST_THRESHOLD) || (distS > 0 && distS < DIST_THRESHOLD);
+  bool carEW = (distE > 0 && distE < DIST_THRESHOLD) || (distW > 0 && distW < DIST_THRESHOLD);
+
+  unsigned long now = millis();
+
+  // If both directions detect cars — alternate every 10 seconds
+  if (carNS && carEW) {
+    if (nsGreen) {
+      if (now - lastSwitchTime >= greenHoldTime) {
+        turnYellowThenRed(NORTH);
+        turnYellowThenRed(SOUTH);
+        setLight(EAST, GREEN);
+        setLight(WEST, GREEN);
+        nsGreen = false;
+        ewGreen = true;
+        lastSwitchTime = now;
+      }
+    } else if (ewGreen) {
+      if (now - lastSwitchTime >= greenHoldTime) {
+        turnYellowThenRed(EAST);
+        turnYellowThenRed(WEST);
+        setLight(NORTH, GREEN);
+        setLight(SOUTH, GREEN);
+        ewGreen = false;
+        nsGreen = true;
+        lastSwitchTime = now;
+      }
+    } else {
+      // Initial case if both have cars at start
+      setLight(NORTH, GREEN);
+      setLight(SOUTH, GREEN);
+      nsGreen = true;
+      ewGreen = false;
+      lastSwitchTime = now;
+    }
+  }
+
+  // Only North/South detected
+  else if (carNS && !carEW) {
+    if (!nsGreen) {
+      turnYellowThenRed(EAST);
+      turnYellowThenRed(WEST);
+      setLight(NORTH, GREEN);
+      setLight(SOUTH, GREEN);
+      nsGreen = true;
+      ewGreen = false;
+    }
+  }
+
+  // Only East/West detected
+  else if (carEW && !carNS) {
+    if (!ewGreen) {
+      turnYellowThenRed(NORTH);
+      turnYellowThenRed(SOUTH);
+      setLight(EAST, GREEN);
+      setLight(WEST, GREEN);
+      ewGreen = true;
+      nsGreen = false;
+    }
+  }
+
+  // No cars detected anywhere → all red
+  else {
+    if (nsGreen || ewGreen) {
+      turnYellowThenRed(NORTH);
+      turnYellowThenRed(SOUTH);
+      turnYellowThenRed(EAST);
+      turnYellowThenRed(WEST);
+      nsGreen = ewGreen = false;
+    }
+  }
+
+  delay(50);
+}
+
+// FUNCTIONS 
+void handleManual(int i) {
+  // Turn all other lights yellow → red before switching this one to green
+  for (int j = 0; j < 4; j++) {
+    if (j != i && (state[j] == GREEN || state[j] == YELLOW)) {
+      turnYellowThenRed(j);
+    }
+  }
+  setLight(i, GREEN);
+}
+
+void setLight(int i, LightColor c) {
+  state[i] = c;
+  digitalWrite(lights[i][0], c == RED ? HIGH : LOW);
+  digitalWrite(lights[i][1], c == YELLOW ? HIGH : LOW);
+  digitalWrite(lights[i][2], c == GREEN ? HIGH : LOW);
+}
+
+void setAll(LightColor c) {
+  for (int i = 0; i < 4; i++) setLight(i, c);
+}
+
+void turnYellowThenRed(int i) {
+  if (state[i] != RED) {
+    setLight(i, YELLOW);
+    delay(1000);
+    setLight(i, RED);
+  }
+}
+
+long getDistance(int i) {
+  digitalWrite(trigPins[i], LOW);
+  delayMicroseconds(2);
+  digitalWrite(trigPins[i], HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trigPins[i], LOW);
+  long duration = pulseIn(echoPins[i], HIGH, 30000);
+  if (duration == 0) return DIST_THRESHOLD + 1; // prevent phantom detection
+  return duration * 0.034 / 2;
+}
+
+//  SWITCH & EMERGENCY 
+void checkSwitches() {
+  static bool lastAll = HIGH, lastSw[4] = {HIGH, HIGH, HIGH, HIGH};
+  bool nowAll = digitalRead(swAllRed);
+
+  // ALL-RED EMERGENCY
+  if (nowAll == LOW && lastAll == HIGH) {
+    emergencyMode = !emergencyMode;
+
+    if (emergencyMode) {
+      // Turn all active lights yellow → red first
+      for (int i = 0; i < 4; i++) {
+        if (state[i] == GREEN || state[i] == YELLOW) {
+          setLight(i, YELLOW);
+        }
+      }
+      delay(1000);
+      for (int i = 0; i < 4; i++) setLight(i, RED);
+
+      playSiren(); // siren starts AFTER all red
+    } else {
+      noTone(buzzerPin);
+      sirenHigh = false;
+      setAll(RED);
+    }
+  }
+  lastAll = nowAll;
+
+  // INDIVIDUAL MANUAL OVERRIDES
+  int pins[4] = {swNorth, swSouth, swEast, swWest};
+  for (int i = 0; i < 4; i++) {
+    bool now = digitalRead(pins[i]);
+    if (now == LOW && lastSw[i] == HIGH) {
+      manualMode[i] = !manualMode[i];
+      if (!manualMode[i]) {
+        noTone(buzzerPin);
+        setAll(RED);
+      }
+    }
+    lastSw[i] = now;
+  }
+}
+
+// SIREN SOUND 
+void playSiren() {
+  unsigned long now = millis();
+  if (now - lastSirenToggle >= 900) {
+    lastSirenToggle = now;
+    sirenHigh = !sirenHigh;
+    tone(buzzerPin, sirenHigh ? 1300 : 1000);
+  }
+}
